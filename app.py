@@ -392,8 +392,7 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 # Tampilan Utama
-st.title("🚢 Analisis Pola dan Prediksi Nilai Impor Indonesia")
-st.subheader("Berdasarkan Kode HS dan Pelabuhan Utama Menggunakan Machine Learning")
+st.title("🚢 Analisis Pola dan Prediksi Nilai Impor Indonesia Berdasarkan Harmonized System Code dan Pelabuhan Utama Menggunakan Model Machine Learning")
 
 # Jika file belum diunggah, tampilkan pesan
 if uploaded_file is None:
@@ -460,17 +459,20 @@ with tab1:
     * **48-49:** Kertas dan produk cetakan
     """)
 
-
 # TAB 2: EKSPLORASI DATA (EDA)
 with tab2:
     st.header("Eksplorasi Data Historis (Hasil Pembersihan)")
 
     try:
+        # Ambil data model
         df_model_eda = data_dict["df_model"].copy()
-        df_model_eda['year'] = pd.to_numeric(df_model_eda['year'])
         
-        annual_total = df_model_eda.groupby("year")["value_usd"].sum().reset_index()
-        annual_total['year'] = annual_total['year'].astype(str)
+        # Plot 1: Tren Nasional (Selalu Tampil)
+        # Salinan untuk agregasi, pastikan tahun adalah numerik
+        df_agg = df_model_eda.copy()
+        df_agg['year'] = pd.to_numeric(df_agg['year'])
+        annual_total = df_agg.groupby("year")["value_usd"].sum().reset_index()
+        annual_total['year'] = annual_total['year'].astype(str) # Balikkan ke string untuk plot
 
         fig_annual = px.line(
             annual_total, x="year", y="value_usd",
@@ -478,20 +480,77 @@ with tab2:
             markers=True, labels={"value_usd": "Total Nilai Impor (USD)", "year": "Tahun"}
         )
         st.plotly_chart(fig_annual, use_container_width=True)
+        
+        st.divider() # Pemisah visual
 
-        st.markdown(f"""
-        Analisis data dari **{pd.to_numeric(data_dict['df_model']['year']).min()}** hingga **{pd.to_numeric(data_dict['df_model']['year']).max()}**:
-        * **Total Baris Data Aktif:** `{len(data_dict['df_model']):,}`
-        * **Jumlah Kode HS Unik:** `{data_dict['df_model']['hs'].nunique()}`
-        * **Jumlah Pelabuhan Unik:** `{data_dict['df_model']['port'].nunique()}`
-        """)
+        # Filter Tahun
+        # Dapatkan daftar tahun unik (sebagai angka) untuk filter
+        numeric_years = sorted(pd.to_numeric(df_model_eda['year']).unique())
+        year_options = ['Semua Tahun'] + numeric_years
+        
+        selected_year = st.selectbox(
+            "Pilih Tahun Spesifik untuk melihat detail:", 
+            year_options
+        )
 
-        st.subheader("Contoh Data yang Digunakan (Panel Aktif)")
-        st.dataframe(data_dict["df_model"].sample(10, random_state=42))
+        # Tampilan Dinamis Berdasarkan Filter
+        if selected_year == 'Semua Tahun':
+            # Tampilkan statistik global
+            st.markdown(f"""
+            Analisis data dari **{numeric_years[0]}** hingga **{numeric_years[-1]}**:
+            * **Total Baris Data Aktif (sepanjang waktu):** `{len(df_model_eda):,}`
+            * **Jumlah Kode HS Unik (sepanjang waktu):** `{df_model_eda['hs'].nunique()}`
+            * **Jumlah Pelabuhan Unik (sepanjang waktu):** `{df_model_eda['port'].nunique()}`
+            """)
+
+            st.subheader("Contoh Data yang Digunakan (Panel Aktif - Acak)")
+            st.dataframe(df_model_eda.sample(10, random_state=42), use_container_width=True)
+        
+        else:
+            # Filter data berdasarkan tahun yang dipilih
+            # Ingat bahwa kolom 'year' di df_model_eda adalah string
+            df_filtered = df_model_eda[df_model_eda['year'] == str(selected_year)]
+            
+            # Tampilkan statistik untuk tahun tersebut
+            st.markdown(f"Analisis data untuk tahun **{selected_year}**:")
+            st.markdown(f"""
+            * **Total Baris Data Aktif:** `{len(df_filtered):,}`
+            * **Jumlah Kode HS Unik:** `{df_filtered['hs'].nunique()}`
+            * **Jumlah Pelabuhan Unik:** `{df_filtered['port'].nunique()}`
+            * **Total Nilai Impor Tahun Ini:** `USD {df_filtered['value_usd'].sum():,.2f}`
+            """)
+
+            st.subheader(f"Contoh Data Panel Aktif (Top 10 Impor - {selected_year})")
+            st.dataframe(df_filtered.sort_values('value_usd', ascending=False).head(10), use_container_width=True)
+
+            # Tampilkan Top 10 untuk tahun tersebut
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader(f"Top 10 Pelabuhan ({selected_year})")
+                top_ports_year = df_filtered.groupby('port')['value_usd'].sum().nlargest(10).reset_index()
+                fig_ports = px.bar(
+                    top_ports_year.sort_values('value_usd', ascending=True), 
+                    x='value_usd', y='port', orientation='h', 
+                    title=f'Top 10 Pelabuhan Impor - {selected_year}',
+                    labels={"value_usd": "Total Nilai Impor (USD)", "port": "Pelabuhan"}
+                )
+                st.plotly_chart(fig_ports, use_container_width=True)
+
+            with col2:
+                st.subheader(f"Top 10 Kode HS ({selected_year})")
+                top_hs_year = df_filtered.groupby('hs')['value_usd'].sum().nlargest(10).reset_index()
+                fig_hs = px.bar(
+                    top_hs_year.sort_values('value_usd', ascending=True), 
+                    x='value_usd', y='hs', orientation='h', 
+                    title=f'Top 10 Kode HS Impor - {selected_year}',
+                    labels={"value_usd": "Total Nilai Impor (USD)", "hs": "Kode HS"}
+                )
+                st.plotly_chart(fig_hs, use_container_width=True)
 
     except Exception as e:
         st.error(f"Error saat membuat plot EDA: {e}")
-
+        st.exception(e) # Menambahkan ini untuk debugging yang lebih baik
 
 # TAB 3: ANALISIS CLUSTERING
 with tab3:
