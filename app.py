@@ -408,60 +408,65 @@ if data_dict is None:
     st.error("Analisis gagal. Periksa kembali format file Anda.")
     st.stop()
 
-# MEMBUAT TAB UNTUK NAVIGASI (SAMA SEPERTI KODE SEBELUMNYA)
+# RINGKASAN PROYEK
+with st.expander("📖 Ringkasan Proyek", expanded=True):
+    col_a, col_b = st.columns([1, 1])
+    
+    with col_a:
+        st.subheader("Tujuan Penelitian")
+        st.markdown("""
+        **1. Mengidentifikasi Pola dan Segmentasi Pelabuhan Impor Utama di Indonesia**
+        Melalui penerapan algoritma clustering (K-Means), penelitian ini bertujuan untuk mengelompokkan pelabuhan berdasarkan kesamaan pola nilai impor tahunan, volume transaksi, dan fluktuasi antar tahun. Hasilnya memberikan gambaran karakteristik pelabuhan, seperti:
+        * Klaster pelabuhan besar dengan nilai impor tinggi dan variasi fluktuatif (misalnya Tanjung Priok dan Belawan),
+        * Klaster pelabuhan menengah dengan aktivitas stabil,
+        * Klaster pelabuhan kecil dengan nilai impor rendah dan pertumbuhan stagnan.
+        
+        **2. Memprediksi Tren Nilai Impor Nasional Periode 2026–2030**
+        Dengan memanfaatkan model Extreme Gradient Boosting (XGBoost) berbasis data historis 2014–2025, penelitian ini bertujuan untuk meramalkan tren lima tahun ke depan pada tingkat nasional. Hasil peramalan menunjukkan adanya kecenderungan penurunan moderat nilai impor Indonesia, yang mengindikasikan perbaikan efisiensi rantai pasok dan peningkatan kemandirian produksi dalam negeri.
+        """)
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🏠 Ringkasan Proyek",
+        st.subheader("Sumber Dataset")
+        st.markdown("""
+        https://www.bps.go.id/id/exim
+        """)
+
+    with col_b:
+        st.subheader("Info Dataset")
+        st.markdown(f"""
+        * **Nama File:** `{uploaded_file.name}`
+        * **Ukuran File:** `{uploaded_file.size / (1024*1024):.2f} MB`
+        * **Fokus Data:** 17 kode HS yang relevan dengan SDGs 8 (Decent Work and Economic Growth).
+        """)
+        
+        st.subheader("Detail Kode HS yang Dianalisis")
+        st.markdown("""
+        Penelitian ini berfokus pada 17 kode HS (Harmonized System) yang dipilih karena relevansinya terhadap **SDGs 8**.
+        
+        * **27:** Bahan bakar mineral / minyak
+        * **29:** Bahan kimia organik
+        * **72:** Besi dan baja
+        * **84:** Mesin dan peralatan mekanis
+        * **85:** Mesin dan perlengkapan elektris
+        * **39:** Plastik dan barang dari plastik
+        * **40:** Karet dan barang dari karet
+        * **73:** Barang dari besi atau baja
+        * **90:** Instrumen optik, medis & presisi
+        * **87:** Kendaraan dan bagiannya
+        * **38:** Berbagai produk kimia
+        * **76:** Aluminium dan barang dari aluminium
+        * **03, 16, 23:** Makanan laut, makanan olahan, dan pakan
+        * **48-49:** Kertas dan produk cetakan
+        """)
+
+# MEMBUAT TAB UNTUK NAVIGASI
+tab1, tab2, tab3 = st.tabs([
     "📊 Eksplorasi Data (EDA)",
     "🧩 Analisis Clustering",
     "📈 Analisis Forecasting"
 ])
 
-# TAB 1: RINGKASAN PROYEK
+# TAB 1: EKSPLORASI DATA (EDA)
 with tab1:
-    st.header("Tujuan Penelitian")
-    st.markdown("""
-    **1. Mengidentifikasi Pola dan Segmentasi Pelabuhan Impor Utama di Indonesia**
-    Melalui penerapan algoritma clustering (K-Means), penelitian ini bertujuan untuk mengelompokkan pelabuhan berdasarkan kesamaan pola nilai impor tahunan, volume transaksi, dan fluktuasi antar tahun. Hasilnya memberikan gambaran karakteristik pelabuhan, seperti:
-    * Klaster pelabuhan besar dengan nilai impor tinggi dan variasi fluktuatif (misalnya Tanjung Priok dan Belawan),
-    * Klaster pelabuhan menengah dengan aktivitas stabil,
-    * Klaster pelabuhan kecil dengan nilai impor rendah dan pertumbuhan stagnan.
-
-    **2. Memprediksi Tren Nilai Impor Nasional Periode 2026–2030**
-    Dengan memanfaatkan model Extreme Gradient Boosting (XGBoost) berbasis data historis 2014–2025, penelitian ini bertujuan untuk meramalkan tren lima tahun ke depan pada tingkat nasional. Hasil peramalan menunjukkan adanya kecenderungan penurunan moderat nilai impor Indonesia, yang mengindikasikan perbaikan efisiensi rantai pasok dan peningkatan kemandirian produksi dalam negeri.
-    """)
-    
-    st.header("Dataset")
-    st.markdown(f"""
-    * **Nama File:** `{uploaded_file.name}`
-    * **Ukuran File:** `{uploaded_file.size / (1024*1024):.2f} MB`
-    * **Data Digunakan:** 17 kode HS yang relevan dengan SDGs 8 (Decent Work and Economic Growth).
-    """)
-    st.info("Gunakan tab di atas untuk menavigasi hasil analisis.")
-
-    st.header("Detail Kode HS yang Dianalisis")
-    st.markdown("""
-    Penelitian ini berfokus pada 17 kode HS (Harmonized System) yang dipilih karena relevansinya terhadap **SDGs 8 (Pekerjaan Layak dan Pertumbuhan Ekonomi)**. Kode-kode ini mewakili komponen kunci untuk ekonomi, ketenagakerjaan, industrialisasi, dan produktivitas.
-    
-    Kode HS yang dianalisis antara lain:
-    * **27:** Bahan bakar mineral / minyak
-    * **29:** Bahan kimia organik
-    * **72:** Besi dan baja
-    * **84:** Mesin dan peralatan mekanis
-    * **85:** Mesin dan perlengkapan elektris
-    * **39:** Plastik dan barang dari plastik
-    * **40:** Karet dan barang dari karet
-    * **73:** Barang dari besi atau baja
-    * **90:** Instrumen optik, medis & presisi
-    * **87:** Kendaraan dan bagiannya
-    * **38:** Berbagai produk kimia
-    * **76:** Aluminium dan barang dari aluminium
-    * **03, 16, 23:** Makanan laut, makanan olahan, dan pakan
-    * **48-49:** Kertas dan produk cetakan
-    """)
-
-# TAB 2: EKSPLORASI DATA (EDA)
-with tab2:
     st.header("Eksplorasi Data Historis (Hasil Pembersihan)")
 
     try:
@@ -553,8 +558,8 @@ with tab2:
         st.error(f"Error saat membuat plot EDA: {e}")
         st.exception(e) # Menambahkan ini untuk debugging yang lebih baik
 
-# TAB 3: ANALISIS CLUSTERING
-with tab3:
+# TAB 2: ANALISIS CLUSTERING
+with tab2:
     st.header("Hasil Clustering Pelabuhan (K-Means)")
     st.markdown("Pelabuhan dikelompokkan berdasarkan profil aktivitas impor mereka (skala, volatilitas, pertumbuhan, dll.)")
 
@@ -597,8 +602,8 @@ with tab3:
             st.dataframe(ports_in_cluster['port'], use_container_width=True)
 
 
-# TAB 4: ANALISIS FORECASTING
-with tab4:
+# TAB 3: ANALISIS FORECASTING
+with tab3:
     st.header("Hasil Prediksi (Forecasting) dengan XGBoost")
 
     st.subheader("Prediksi Tren Nilai Impor Nasional (5 Tahun ke Depan)")
