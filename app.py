@@ -392,7 +392,7 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 # Tampilan Utama
-st.title("🚢 Analisis Pola dan Prediksi Nilai Impor Indonesia Berdasarkan Harmonized System Code dan Pelabuhan Utama Menggunakan Model Machine Learning")
+st.title("🚢 Prediksi Pendapatan Impor Indonesia Berdasarkan Aktivitas Pendapatan Pelabuhan")
 
 # Jika file belum diunggah, tampilkan pesan
 if uploaded_file is None:
@@ -421,13 +421,14 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.header("Tujuan Penelitian")
     st.markdown("""
-    Penelitian ini memiliki dua tujuan utama:
-
     **1. Mengidentifikasi Pola dan Segmentasi Pelabuhan Impor Utama di Indonesia**
-    Melalui penerapan algoritma clustering (K-Means), penelitian ini bertujuan untuk mengelompokkan pelabuhan berdasarkan kesamaan pola nilai impor tahunan, volume transaksi, dan fluktuasi antar tahun.
+    Melalui penerapan algoritma clustering (K-Means), penelitian ini bertujuan untuk mengelompokkan pelabuhan berdasarkan kesamaan pola nilai impor tahunan, volume transaksi, dan fluktuasi antar tahun. Hasilnya memberikan gambaran karakteristik pelabuhan, seperti:
+    * Klaster pelabuhan besar dengan nilai impor tinggi dan variasi fluktuatif (misalnya Tanjung Priok dan Belawan),
+    * Klaster pelabuhan menengah dengan aktivitas stabil,
+    * Klaster pelabuhan kecil dengan nilai impor rendah dan pertumbuhan stagnan.
 
     **2. Memprediksi Tren Nilai Impor Nasional Periode 2026–2030**
-    Dengan memanfaatkan model Extreme Gradient Boosting (XGBoost) berbasis data historis, penelitian ini bertujuan untuk meramalkan tren lima tahun ke depan pada tingkat nasional.
+    Dengan memanfaatkan model Extreme Gradient Boosting (XGBoost) berbasis data historis 2014–2025, penelitian ini bertujuan untuk meramalkan tren lima tahun ke depan pada tingkat nasional. Hasil peramalan menunjukkan adanya kecenderungan penurunan moderat nilai impor Indonesia, yang mengindikasikan perbaikan efisiensi rantai pasok dan peningkatan kemandirian produksi dalam negeri.
     """)
     
     st.header("Dataset")
