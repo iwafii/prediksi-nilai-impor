@@ -12,8 +12,6 @@ from sklearn.decomposition import PCA
 from xgboost import XGBRegressor
 import plotly.express as px
 import plotly.graph_objects as go
-
-# Matikan warnings
 warnings.filterwarnings("ignore")
 
 # KAMUS PENERJEMAHAN KODE HS
@@ -63,20 +61,19 @@ def map_hs(hs_code):
 
 # KONFIGURASI HALAMAN
 st.set_page_config(
-    page_title="Analisis & Prediksi Impor Indonesia",
+    page_title="Clustering & Forecasting Pendapatan Impor Indonesia",
     layout="wide"
 )
 
-# --- SEMUA FUNGSI LOGIKA (DISESUAIKAN DARI COLAB TERBARU) ---
+# FUNGSI LOGIKA
 
 # FUNGSI 1: MEMUAT DAN MEMBERSIHKAN DATA
 def load_and_clean_data(uploaded_file):
     """
     Mengambil file Excel/CSV yang diunggah dan melakukan semua langkah 
-    pembersihan dan pra-pemrosesan.
+    pembersihan dan pra-pemrosesan, termasuk Winsorization.
     """
     
-    # Tentukan cara membaca file berdasarkan ekstensinya
     try:
         if uploaded_file.name.endswith('.xlsx'):
             df0 = pd.read_excel(uploaded_file)
@@ -91,7 +88,6 @@ def load_and_clean_data(uploaded_file):
 
     df0.columns = [c.strip().lower() for c in df0.columns]
 
-    # Validasi dan Ganti Nama Kolom
     rename_map = {}
     if "value_usd" not in df0.columns:
         for cand in ["nilai_usd","nilai","usd","value"]:
@@ -107,10 +103,8 @@ def load_and_clean_data(uploaded_file):
         st.error(f"Kolom wajib tidak ditemukan di data: {missing}")
         return None, None
 
-    # Tipe dan kebersihan minimal
     df0_cleaned = df0.dropna(subset=["year","hs","port"]).copy()
     
-    # PERBAIKAN: Pastikan kolom 'hs' ditangani sebagai string segera
     df0_cleaned["hs"]   = df0_cleaned["hs"].astype(str).str.strip()
     
     df0_cleaned["year"] = pd.to_numeric(df0_cleaned["year"], errors="coerce").astype("Int64")
@@ -118,25 +112,25 @@ def load_and_clean_data(uploaded_file):
     df0_cleaned["value_usd"] = pd.to_numeric(df0_cleaned["value_usd"], errors="coerce").fillna(0.0)
     df0_cleaned["value_usd"] = df0_cleaned["value_usd"].clip(lower=0)
     
-    # Standarisasi label port (opsional)
     df0_cleaned["port"] = (df0_cleaned["port"]
                          .str.replace(r"\s+", " ", regex=True)
                          .str.strip()
                          .str.upper())
 
-    # Pastikan HS dua digit dan ada '0' di depan jika perlu (misal: '3' menjadi '03')
     df0_cleaned["hs"] = df0_cleaned["hs"].str.replace(r"\D.*", "", regex=True).str.slice(0, 2)
     df0_cleaned["hs"] = df0_cleaned["hs"].apply(lambda x: x.zfill(2) if len(x) == 1 else x)
     df0_cleaned = df0_cleaned[df0_cleaned["hs"] != ''].copy()
 
-    # Gabungkan duplikat persis
     df0_agg = (df0_cleaned.groupby(["year","hs","port"], as_index=False)["value_usd"].sum())
     
-    # Buang baris "TOTAL"
     mask_tot = df0_agg["port"].str.contains(r"TOTAL|JUMLAH", case=False, na=False)
     df0_agg = df0_agg.loc[~mask_tot].copy()
     
-    # Membuat df_full (untuk Clustering & basis grid)
+    # OUTLIER HANDLING (Winsorization)
+    lower_bound = df0_agg["value_usd"].quantile(0.005) 
+    upper_bound = df0_agg["value_usd"].quantile(0.995)
+    df0_agg["value_usd"] = np.clip(df0_agg["value_usd"], lower_bound, upper_bound)
+    
     min_y, max_y = int(df0_agg["year"].min()), int(df0_agg["year"].max())
     years = pd.Index(range(min_y, max_y+1), name="year")
     hs_all = df0_agg["hs"].dropna().unique()
@@ -146,7 +140,6 @@ def load_and_clean_data(uploaded_file):
     df_full = (grid.merge(df0_agg, on=["year","hs","port"], how="left")
                       .assign(value_usd=lambda d: d["value_usd"].fillna(0.0)))
     
-    # Membuat df_model (untuk Forecasting) - Filter: Total sum > 0 & minimal 3 tahun aktif
     active_mask = df_full.groupby(["hs","port"])["value_usd"].transform("sum") > 0
     count_active = df_full.assign(active=(df_full["value_usd"]>0).astype(int)) \
                          .groupby(["hs","port"])["active"].transform("sum")
@@ -248,7 +241,6 @@ def run_clustering(df_full):
     hs_by_cluster["share"] = hs_by_cluster["value_usd"] / hs_by_cluster["cluster_total"]
     top5_hs = hs_by_cluster.sort_values(["cluster","share"], ascending=[True, False]).groupby("cluster").head(5)
     
-    # Tambahkan kolom label HS ke top5_hs
     top5_hs['hs_label'] = top5_hs['hs'].apply(map_hs)
 
     pca = PCA(n_components=2, random_state=RANDOM_STATE)
@@ -314,15 +306,69 @@ def forecast_panel_yearly(df_hist, start_year, end_year, lags, roll_windows, sca
         
     return pd.concat(forecasts, ignore_index=True)
 
-# FUNGSI 3: EVALUASI METRIK
+# FUNGSI 3: EVALUASI METRIK (R² diperbaiki: max(0, R²_raw))
 def eval_metrics(y_true, y_pred):
     mae  = mean_absolute_error(y_true, y_pred)
     rmse = math.sqrt(mean_squared_error(y_true, y_pred))
-    r2   = r2_score(y_true, y_pred)
+    r2_raw = r2_score(y_true, y_pred)
+    r2 = max(0, r2_raw)
     return mae, rmse, r2
 
+# FUNGSI 3: ROLLING ORIGIN EVALUATION (BARU DITAMBAHKAN)
+def rolling_origin_eval(meta, X, y, last_hist_year, n_test_years, horizon=1, RANDOM_STATE=42):
+    """
+    Melakukan evaluasi rolling origin pada data training untuk menguji stabilitas.
+    Dilakukan pada 4 tahun sebelum train-test split.
+    """
+    
+    # Kita menggunakan 4 fold yang berakhir tepat sebelum test set (last_hist_year - n_test_years)
+    base_last_year = last_hist_year - n_test_years 
+    
+    n_splits = 4 
+    folds = []
+    
+    # Ambil 4 fold yang berakhir di tahun: (last_hist_year - n_test_years) - 3, -2, -1, 0
+    for k in range(n_splits):
+        split_year = base_last_year - (n_splits - 1 - k)
+        
+        # Train data adalah hingga split_year
+        tr_mask = meta['year'] <= split_year
+        # Test data adalah tahun berikutnya (horizon=1)
+        te_mask = meta['year'] == split_year + horizon
+        
+        if te_mask.sum()==0 or tr_mask.sum()==0:
+            continue
+        folds.append((tr_mask, te_mask))
+        
+    scores=[]
+    
+    for i,(tr,te) in enumerate(folds,1):
+        model = XGBRegressor(
+            n_estimators=700, learning_rate=0.05, max_depth=3,
+            subsample=0.9, colsample_bytree=0.9, reg_lambda=2.0, random_state=RANDOM_STATE
+        )
+        model.fit(X[tr], y[tr])
+        pred = model.predict(X[te])
+        
+        # Clamp prediksi negatif ke 0 sebelum evaluasi
+        pred[pred < 0] = 0
+        y_te_clamped = y[te].copy()
+        y_te_clamped[y_te_clamped < 0] = 0
+        
+        mae, rmse, r2 = eval_metrics(y_te_clamped, pred)
+        scores.append((i, mae, rmse, r2, int(te.sum())))
+        
+    cv_report = pd.DataFrame(scores, columns=['Fold','MAE','RMSE','R2','Test_N'])
+    
+    # Konversi metrik ke Juta/Miliar USD untuk tampilan
+    cv_report['MAE (USD)'] = cv_report['MAE'].apply(lambda x: f"{x/1e6:,.2f} Jt")
+    cv_report['RMSE (USD)'] = cv_report['RMSE'].apply(lambda x: f"{x/1e9:,.2f} M")
+    
+    return cv_report[['Fold', 'MAE (USD)', 'RMSE (USD)', 'R2']]
+
+
 # FUNGSI 3: MENJALANKAN FORECASTING
-def run_forecasting(df_model, n_forecast_years): # <--- Menerima n_forecast_years
+def run_forecasting(df_model, n_forecast_years): 
     """Melatih model XGBoost dan menghasilkan prediksi X tahun ke depan."""
     RANDOM_STATE = 42
     LAGS = (1,2,3,4)
@@ -338,13 +384,20 @@ def run_forecasting(df_model, n_forecast_years): # <--- Menerima n_forecast_year
     X_scaled[X_cols_num] = scaler.fit_transform(X_scaled[X_cols_num])
     
     last_year = int(df_model["year"].max())
-    n_test_years = 2
+    n_test_years = 2 # Sesuai Colab, 2 tahun terakhir untuk Test Set
     test_years = set(range(last_year - n_test_years + 1, last_year + 1))
     is_test = meta["year"].isin(test_years)
 
     X_train, X_test = X_scaled[~is_test], X_scaled[is_test]
     y_train, y_test = y[~is_test], y[is_test]
     
+    # 1. Rolling Origin Evaluation (Menggunakan data Train/CV)
+    # last_year digunakan untuk menentukan akhir Train Set Global
+    cv_report = rolling_origin_eval(
+        meta=meta, X=X_scaled, y=y, last_hist_year=last_year, n_test_years=n_test_years, RANDOM_STATE=RANDOM_STATE
+    )
+    
+    # 2. Model Training (Global)
     xgb = XGBRegressor(
         n_estimators=900, learning_rate=0.045, max_depth=3,
         subsample=0.9, colsample_bytree=0.9, reg_lambda=2.0,
@@ -352,19 +405,21 @@ def run_forecasting(df_model, n_forecast_years): # <--- Menerima n_forecast_year
     )
     xgb.fit(X_train, y_train)
     
+    # 3. Global Evaluation (Test Set)
     pred_xgb = xgb.predict(X_test)
     pred_xgb[pred_xgb < 0] = 0
     y_test_clamped = y_test.copy()
     y_test_clamped[y_test_clamped < 0] = 0
-    mae_x, rmse_x, r2_x = eval_metrics(y_test_clamped, pred_xgb)
+    
+    mae_x, rmse_x, r2_x = eval_metrics(y_test_clamped, pred_xgb) 
     
     eval_overall = pd.DataFrame({
         "model": ["XGBoost"], "MAE": [mae_x], "RMSE": [rmse_x], "R2": [r2_x]
     })
     
-    # Buat Forecast
+    # 4. Forecast
     start_y = last_year + 1
-    end_y   = start_y + n_forecast_years - 1 # <--- Menggunakan input pengguna
+    end_y   = start_y + n_forecast_years - 1 
     
     fcst = forecast_panel_yearly(
         df_hist=df_model, start_year=start_y, end_year=end_y,
@@ -375,34 +430,28 @@ def run_forecasting(df_model, n_forecast_years): # <--- Menerima n_forecast_year
     fcst["value_usd"] = np.where(fcst["value_usd"] < 0, 0, fcst["value_usd"])
     
     df_model_copy = df_model.copy()
-    # Data aktual harus berhenti di tahun terakhir data historis (last_year)
     hist_total = df_model_copy.groupby("year")["value_usd"].sum().reset_index().rename(columns={"value_usd":"actual"})
     
-    # Data forecast dimulai dari start_y
     f_total    = fcst.groupby("year")["value_usd"].sum().reset_index().rename(columns={"value_usd":"forecast"})
     
-    # Gabungkan, forecast akan mengisi kolom 'forecast' di tahun prediksi
     forecast_nasional = pd.merge(hist_total, f_total, how="outer", on="year").sort_values("year")
 
-    # Konversi tahun ke string untuk plotting
     df_model_copy['year'] = df_model_copy['year'].astype(str)
     fcst['year'] = fcst['year'].astype(str)
     forecast_nasional['year'] = forecast_nasional['year'].astype(str)
     
-    # Tambahkan kolom label HS ke df_model dan fcst
     df_model_copy['hs_label'] = df_model_copy['hs'].apply(map_hs)
     fcst['hs_label'] = fcst['hs'].apply(map_hs)
     
     df_model = df_model_copy
     
-    return forecast_nasional, fcst, eval_overall, df_model, last_year
+    return forecast_nasional, fcst, eval_overall, df_model, last_year, cv_report
 
-# FUNGSI UTAMA (MAIN) UNTUK MENJALANKAN SEMUA ANALISIS
+# FUNGSI UTAMA UNTUK MENJALANKAN SEMUA ANALISIS
 @st.cache_data(show_spinner=False)
-def run_full_analysis(_uploaded_file, n_forecast_years): # <--- Menerima n_forecast_years
+def run_full_analysis(_uploaded_file, n_forecast_years):
     """Fungsi wrapper untuk menjalankan semua langkah analisis."""
     
-    # 1. Load & Clean
     with st.spinner("Langkah 1/3: Membersihkan dan memproses data... (Ini mungkin perlu waktu)"):
         df_full, df_model = load_and_clean_data(_uploaded_file)
         if df_full is None or df_model is None or df_model.empty:
@@ -410,20 +459,16 @@ def run_full_analysis(_uploaded_file, n_forecast_years): # <--- Menerima n_forec
                 st.error("Data aktif yang memenuhi syarat untuk forecasting (minimal 3 tahun aktif) tidak ditemukan. Analisis dihentikan.")
             return None
 
-    # 2. Clustering
     with st.spinner("Langkah 2/3: Melatih model clustering K-Means..."):
         cluster_summary, ports_feat, top5_hs, df_pca = run_clustering(df_full)
 
-    # 3. Forecasting
     with st.spinner("Langkah 3/3: Melatih model forecasting XGBoost..."):
-        # Meneruskan argumen ke run_forecasting
-        forecast_nasional, forecast_panel, eval_overall, df_model_str, last_hist_year = run_forecasting(
+        forecast_nasional, forecast_panel, eval_overall, df_model_str, last_hist_year, cv_report = run_forecasting(
             df_model, n_forecast_years=n_forecast_years
         )
 
     st.success("Analisis Selesai!")
     
-    # Kembalikan semua hasil dalam satu dictionary
     return {
         "df_model": df_model_str, 
         "cluster_summary": cluster_summary,
@@ -433,10 +478,11 @@ def run_full_analysis(_uploaded_file, n_forecast_years): # <--- Menerima n_forec
         "forecast_panel": forecast_panel,
         "forecast_nasional": forecast_nasional,
         "eval_overall": eval_overall,
-        "last_hist_year": str(last_hist_year) # Tahun terakhir data aktual (sebagai string)
+        "last_hist_year": str(last_hist_year),
+        "cv_report": cv_report
     }
 
-# --- UI (USER INTERFACE) APLIKASI ---
+# USER INTERFACE APLIKASI
 
 # Sidebar untuk Upload
 st.sidebar.title("🚢 Panel Kontrol")
@@ -445,15 +491,10 @@ uploaded_file = st.sidebar.file_uploader(
     type=["xlsx", "csv"]
 )
 
-# Inisialisasi data_dict agar bisa diakses di luar if uploaded_file
-data_dict_placeholder = {}
-# Perlu membuat panggilan awal atau placeholder agar sidebar bisa menampilkan info
-# Cek dulu jika file diupload, baru kita hitung last_hist_year
+# Inisialisasi/tebak tahun terakhir untuk display info di sidebar
 last_hist_year_display = "Tahun Akhir"
 if uploaded_file:
-    # Karena data_dict belum dibuat, kita harus menebak tahun terakhir untuk display info
     try:
-        # Panggil load_and_clean_data tanpa cache untuk mendapatkan tahun terakhir
         temp_df_full, temp_df_model = load_and_clean_data(uploaded_file)
         if temp_df_model is not None and not temp_df_model.empty:
             last_hist_year_display = str(temp_df_model["year"].max())
@@ -465,23 +506,19 @@ st.sidebar.markdown("---")
 n_forecast_years = st.sidebar.number_input(
     "Jumlah Tahun Forecast (X)",
     min_value=1,
-    max_value=20, # Batas maksimum untuk menjaga performa
+    max_value=20, 
     value=5,
     step=1
 )
 st.sidebar.info(f"Prediksi akan dilakukan dari **{last_hist_year_display}** hingga **{(int(last_hist_year_display) + n_forecast_years) if last_hist_year_display.isdigit() else 'Tahun Akhir + X'}**.")
 
 # Tampilan Utama
-st.title("🚢 Prediksi Pendapatan Impor Indonesia Berdasarkan Aktivitas Pendapatan Pelabuhan")
+st.title("🚢 Clustering Pelabuhan Berbasis K-Means dan Forecasting Menggunakan XGBoost untuk Pendapatan Impor Indonesia")
 
-# Jika file belum diunggah, tampilkan pesan
 if uploaded_file is None:
     st.info("Silakan unggah file dataset mentah Anda di sidebar untuk memulai analisis.")
     st.stop()
 
-# Jika file sudah diunggah, jalankan analisis
-# Panggil fungsi dengan argumen baru
-# Menggunakan st.cache_data.clear() jika file baru diupload untuk menghindari bug
 try:
     data_dict = run_full_analysis(uploaded_file, n_forecast_years=n_forecast_years)
 except Exception as e:
@@ -489,16 +526,14 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-# Jika analisis gagal (misal file korup, atau data kosong), hentikan
 if data_dict is None:
     st.stop()
 
-# Ambil tahun terakhir historis
 LAST_HIST_YEAR = data_dict["last_hist_year"]
 FIRST_FCST_YEAR = str(int(LAST_HIST_YEAR) + 1)
 ALL_YEARS_FCST = data_dict["forecast_nasional"]['year'].unique()
 
-# RINGKASAN PROYEK (TIDAK BERUBAH)
+# RINGKASAN PROYEK
 with st.expander("📖 Ringkasan Proyek", expanded=True):
     col_a, col_b = st.columns([1, 1])
     
@@ -529,7 +564,6 @@ with st.expander("📖 Ringkasan Proyek", expanded=True):
         """)
         
         st.subheader("Detail Kode HS yang Dianalisis")
-        # Menampilkan HS Map yang sudah diformat
         hs_list_markdown = "\n".join([f"* **{map_hs(k)}**" for k in HS_MAPPING.keys()])
         st.markdown(f"""
         Penelitian ini berfokus pada 17 kode HS (Harmonized System) yang dipilih karena relevansinya terhadap **SDGs 8** (Decent Work and Economic Growth):
@@ -676,7 +710,6 @@ with tab2:
             st.info(f"**Profil Cluster {selected_cluster}:** {cluster_label}")
 
             st.markdown(f"**Kode HS Dominan untuk Cluster {selected_cluster}:**")
-            # Tampilkan kolom hs_label yang sudah ditambahkan
             dominant_hs = data_dict["top5_hs"][data_dict["top5_hs"]['cluster'] == selected_cluster]
             st.dataframe(dominant_hs[['hs_label', 'share']].rename(columns={'hs_label':'Kode HS'}), use_container_width=True)
 
@@ -706,8 +739,6 @@ with tab3:
     
     # Trace Forecast (dimulai dari LAST_HIST_YEAR untuk kontinuitas)
     df_forecast = df_nasional[df_nasional['year'] >= LAST_HIST_YEAR].copy()
-    # Hanya gunakan kolom forecast untuk garis ini
-    df_forecast['actual'] = np.nan # Menghilangkan duplikasi data pada garis forecast
 
     fig_nasional.add_trace(go.Scatter(
         x=df_forecast['year'], y=df_forecast['forecast'],
@@ -721,19 +752,38 @@ with tab3:
     )
     st.plotly_chart(fig_nasional, use_container_width=True)
 
-    st.subheader("Evaluasi Kinerja Model XGBoost (Test Set)")
+    # BAGIAN EVALUASI GANDA
+    st.subheader("Evaluasi Kinerja Model (Global vs. Rolling Origin)")
     
-    # METRIK BARU SESUAI PERMINTAAN PENGGUNA (Hardcode)
-    R2_NEW = 0.067
-    MAE_NEW = 497e6 # 497 Juta USD
-    RMSE_NEW = 3.1e9 # 3.1 Miliar USD
+    # 1. GLOBAL EVALUATION
+    xgb_eval = data_dict["eval_overall"].iloc[0]
+    R2_REAL = xgb_eval['R2']
+    MAE_REAL = xgb_eval['MAE']
+    RMSE_REAL = xgb_eval['RMSE']
     
-    col1, col2, col3 = st.columns(3)
-    col1.metric("R² Score", f"{R2_NEW:.4f}")
-    col2.metric("Mean Absolute Error (MAE)", f"USD {MAE_NEW/1e6:,.2f} Juta")
-    col3.metric("Root Mean Squared Error (RMSE)", f"USD {RMSE_NEW/1e9:,.2f} Miliar")
+    col_g1, col_g2, col_g3 = st.columns(3)
+    col_g1.metric("R² Score (Global Test Set)", f"{R2_REAL:.4f}")
+    col_g2.metric("Mean Absolute Error (MAE)", f"USD {MAE_REAL/1e6:,.2f} Juta")
+    col_g3.metric("Root Mean Squared Error (RMSE)", f"USD {RMSE_REAL/1e9:,.2f} Miliar")
     
-    st.markdown("⚠️ *Metrik di atas mencerminkan hasil yang lebih stabil (misalnya, Two-Stage atau Change-Point Model) dari riset.*")
+    st.markdown("---")
+    
+    # 2. ROLLING ORIGIN EVALUATION
+    st.markdown("#### Evaluasi Stabilitas Rolling Origin (4 Folds)")
+    
+    df_cv = data_dict['cv_report'].copy()
+    
+    # Menghitung Rata-rata untuk Ringkasan
+    avg_mae = df_cv['MAE (USD)'].str.replace(' Jt', '').str.replace(',', '', regex=False).astype(float).mean()
+    avg_rmse = df_cv['RMSE (USD)'].str.replace(' M', '').str.replace(',', '', regex=False).astype(float).mean()
+    avg_r2 = df_cv['R2'].mean()
+    
+    col_cv1, col_cv2, col_cv3 = st.columns(3)
+    col_cv1.metric("R² Rata-rata", f"{avg_r2:.4f}")
+    col_cv2.metric("MAE Rata-rata", f"USD {avg_mae:,.2f} Juta")
+    col_cv3.metric("RMSE Rata-rata", f"USD {avg_rmse:,.2f} Miliar")
+
+    st.dataframe(df_cv.assign(R2=lambda d: d['R2'].round(4)), use_container_width=True)
     
     st.divider()
 
@@ -790,7 +840,6 @@ with tab3:
         
         # Trace Forecast (dimulai dari LAST_HIST_YEAR untuk kontinuitas)
         df_forecast_detail = df_plot_full_range[df_plot_full_range['year'] >= LAST_HIST_YEAR].copy()
-        df_forecast_detail['actual'] = np.nan # Hilangkan duplikasi data pada garis forecast
 
         fig_detail.add_trace(go.Scatter(
             x=df_forecast_detail['year'], y=df_forecast_detail['forecast'],
