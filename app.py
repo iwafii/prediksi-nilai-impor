@@ -47,9 +47,9 @@ def map_hs(hs_code):
         
         # Penanganan grup (jika perlu)
         if hs_code_str in ['03', '16', '23']:
-             return f"{hs_code_str} - {HS_MAPPING.get(hs_code_str, 'Grup Makanan/Pakan')}"
+             return f"{hs_code_str} - Grup Makanan/Pakan"
         elif hs_code_str in ['48', '49']:
-             return f"{hs_code_str} - {HS_MAPPING.get(hs_code_str, 'Grup Kertas/Cetak')}"
+             return f"{hs_code_str} - Grup Kertas/Cetak"
         
         return hs_code_str
     
@@ -140,6 +140,7 @@ def load_and_clean_data(uploaded_file):
     df_full = (grid.merge(df0_agg, on=["year","hs","port"], how="left")
                       .assign(value_usd=lambda d: d["value_usd"].fillna(0.0)))
     
+    # Filter untuk df_model
     active_mask = df_full.groupby(["hs","port"])["value_usd"].transform("sum") > 0
     count_active = df_full.assign(active=(df_full["value_usd"]>0).astype(int)) \
                          .groupby(["hs","port"])["active"].transform("sum")
@@ -210,6 +211,7 @@ def run_clustering(df_full):
     Ks = list(range(2,7))
     sils = []
     RANDOM_STATE = 42
+    # Cek k optimal
     for k in Ks:
         km = KMeans(n_clusters=k, random_state=RANDOM_STATE, n_init=10)
         labels = km.fit_predict(Xc)
@@ -282,22 +284,35 @@ def make_panel_features(df, lags=(1,2,3,4), roll_windows=(3,5)):
     return dd, X, y, meta
 
 # FUNGSI 3: FORECAST ITERATIF
-def forecast_panel_yearly(df_hist, start_year, end_year, lags, roll_windows, scaler, model, X_cols_num, all_X_cols):
+def forecast_panel_yearly(df_hist, start_year, end_year, lags, roll_windows, scaler, model, all_X_cols):
     """Helper function to generate iterative future forecasts."""
     hist = df_hist.copy()
     forecasts = []
+    
+    # Kolom Numerik
+    num_prefix = ("lag","rollmean_","rollstd_","diff","growth")
+    X_cols_num = [c for c in all_X_cols if any([c.startswith(p) for p in num_prefix])]
+    
     for y in range(start_year, end_year+1):
+        # Langkah 1: Buat fitur dari data historis + prediksi tahun sebelumnya
         ddh, Xh, yh, metah = make_panel_features(hist, lags=lags, roll_windows=roll_windows)
         latest = int(metah["year"].max())
+        
         rows_for_next = (metah["year"]==latest)
         Xn = Xh.loc[rows_for_next].copy()
         
+        # Langkah 2: Scaling dan Reindexing
         Xn_scaled = Xn.copy()
         Xn_scaled[X_cols_num] = scaler.transform(Xn_scaled[X_cols_num])
+        
+        # Reindex ke kolom Training (all_X_cols) dan isi NaN (untuk dummy yang tidak muncul) dengan 0
         Xn_scaled = Xn_scaled.reindex(columns=all_X_cols).fillna(0)
 
+        # Langkah 3: Prediksi
         yhat = model.predict(Xn_scaled)
+        yhat[yhat < 0] = 0 # Clamp hasil negatif ke 0
         
+        # Langkah 4: Simpan prediksi dan gabungkan ke histori untuk iterasi berikutnya
         meta_next = metah.loc[rows_for_next, ["hs","port"]].copy()
         pred_df = meta_next.assign(year=y, value_usd=yhat)
         
@@ -306,7 +321,7 @@ def forecast_panel_yearly(df_hist, start_year, end_year, lags, roll_windows, sca
         
     return pd.concat(forecasts, ignore_index=True)
 
-# FUNGSI 3: EVALUASI METRIK (R² diperbaiki: max(0, R²_raw))
+# FUNGSI 3: EVALUASI METRIK
 def eval_metrics(y_true, y_pred):
     mae  = mean_absolute_error(y_true, y_pred)
     rmse = math.sqrt(mean_squared_error(y_true, y_pred))
@@ -314,14 +329,23 @@ def eval_metrics(y_true, y_pred):
     r2 = max(0, r2_raw)
     return mae, rmse, r2
 
-# FUNGSI 3: ROLLING ORIGIN EVALUATION (BARU DITAMBAHKAN)
+# FUNGSI 3: ROLLING ORIGIN EVALUATION
 def rolling_origin_eval(meta, X, y, last_hist_year, n_test_years, horizon=1, RANDOM_STATE=42):
     """
     Melakukan evaluasi rolling origin pada data training untuk menguji stabilitas.
     Dilakukan pada 4 tahun sebelum train-test split.
     """
     
-    # Kita menggunakan 4 fold yang berakhir tepat sebelum test set (last_hist_year - n_test_years)
+    # Kolom Numerik
+    num_prefix = ("lag","rollmean_","rollstd_","diff","growth")
+    X_cols_num = [c for c in X.columns if any([c.startswith(p) for p in num_prefix])]
+    
+    # Scaling yang akan digunakan di dalam loop
+    scaler_cv = StandardScaler()
+    X_scaled_cv = X.copy()
+    X_scaled_cv[X_cols_num] = scaler_cv.fit_transform(X_scaled_cv[X_cols_num])
+    
+    # last_hist_year - n_test_years adalah tahun terakhir dari Train Set global
     base_last_year = last_hist_year - n_test_years 
     
     n_splits = 4 
@@ -331,9 +355,7 @@ def rolling_origin_eval(meta, X, y, last_hist_year, n_test_years, horizon=1, RAN
     for k in range(n_splits):
         split_year = base_last_year - (n_splits - 1 - k)
         
-        # Train data adalah hingga split_year
         tr_mask = meta['year'] <= split_year
-        # Test data adalah tahun berikutnya (horizon=1)
         te_mask = meta['year'] == split_year + horizon
         
         if te_mask.sum()==0 or tr_mask.sum()==0:
@@ -343,19 +365,22 @@ def rolling_origin_eval(meta, X, y, last_hist_year, n_test_years, horizon=1, RAN
     scores=[]
     
     for i,(tr,te) in enumerate(folds,1):
+        # Menggunakan subset data yang sudah diskalakan
+        Xtr, Xte = X_scaled_cv[tr], X_scaled_cv[te]
+        ytr, yte = y[tr], y[te]
+        
         model = XGBRegressor(
             n_estimators=700, learning_rate=0.05, max_depth=3,
             subsample=0.9, colsample_bytree=0.9, reg_lambda=2.0, random_state=RANDOM_STATE
         )
-        model.fit(X[tr], y[tr])
-        pred = model.predict(X[te])
+        model.fit(Xtr, ytr)
+        pred = model.predict(Xte)
         
         # Clamp prediksi negatif ke 0 sebelum evaluasi
         pred[pred < 0] = 0
-        y_te_clamped = y[te].copy()
-        y_te_clamped[y_te_clamped < 0] = 0
         
-        mae, rmse, r2 = eval_metrics(y_te_clamped, pred)
+        # Harusnya y_te tidak ada yang < 0 jika pembersihan sudah benar
+        mae, rmse, r2 = eval_metrics(yte, pred)
         scores.append((i, mae, rmse, r2, int(te.sum())))
         
     cv_report = pd.DataFrame(scores, columns=['Fold','MAE','RMSE','R2','Test_N'])
@@ -378,6 +403,7 @@ def run_forecasting(df_model, n_forecast_years):
     
     num_prefix = ("lag","rollmean_","rollstd_","diff","growth")
     X_cols_num = [c for c in X.columns if any([c.startswith(p) for p in num_prefix])]
+    all_X_cols = X.columns # Kritis untuk reindexing di forecast iteratif
     
     scaler = StandardScaler()
     X_scaled = X.copy()
@@ -392,12 +418,11 @@ def run_forecasting(df_model, n_forecast_years):
     y_train, y_test = y[~is_test], y[is_test]
     
     # 1. Rolling Origin Evaluation (Menggunakan data Train/CV)
-    # last_year digunakan untuk menentukan akhir Train Set Global
     cv_report = rolling_origin_eval(
-        meta=meta, X=X_scaled, y=y, last_hist_year=last_year, n_test_years=n_test_years, RANDOM_STATE=RANDOM_STATE
+        meta=meta, X=X, y=y, last_hist_year=last_year, n_test_years=n_test_years, RANDOM_STATE=RANDOM_STATE
     )
     
-    # 2. Model Training (Global)
+    # 2. Model Training (Global) - Parameter Identik Colab
     xgb = XGBRegressor(
         n_estimators=900, learning_rate=0.045, max_depth=3,
         subsample=0.9, colsample_bytree=0.9, reg_lambda=2.0,
@@ -424,7 +449,7 @@ def run_forecasting(df_model, n_forecast_years):
     fcst = forecast_panel_yearly(
         df_hist=df_model, start_year=start_y, end_year=end_y,
         lags=LAGS, roll_windows=ROLL,
-        scaler=scaler, model=xgb, X_cols_num=X_cols_num, all_X_cols=X_train.columns
+        scaler=scaler, model=xgb, all_X_cols=all_X_cols
     )
     
     fcst["value_usd"] = np.where(fcst["value_usd"] < 0, 0, fcst["value_usd"])
@@ -520,6 +545,7 @@ if uploaded_file is None:
     st.stop()
 
 try:
+    # Hapus cache jika ada masalah konsistensi data/parameter
     data_dict = run_full_analysis(uploaded_file, n_forecast_years=n_forecast_years)
 except Exception as e:
     st.error(f"Analisis gagal. Coba unggah ulang file atau periksa formatnya. Error: {e}")
@@ -774,6 +800,7 @@ with tab3:
     df_cv = data_dict['cv_report'].copy()
     
     # Menghitung Rata-rata untuk Ringkasan
+    # Mengambil nilai numerik dari kolom yang diformat
     avg_mae = df_cv['MAE (USD)'].str.replace(' Jt', '').str.replace(',', '', regex=False).astype(float).mean()
     avg_rmse = df_cv['RMSE (USD)'].str.replace(' M', '').str.replace(',', '', regex=False).astype(float).mean()
     avg_r2 = df_cv['R2'].mean()
@@ -811,7 +838,8 @@ with tab3:
         if selected_hs == 'Semua':
             ports_list_filtered = ['Semua'] + sorted(df_hist_filter['port'].unique().tolist())
         else:
-            ports_list_filtered = ['Semua'] + sorted(df_hist_filter[df_hist_filter['hs'] == selected_hs]['port'].unique().tolist())
+            ports_of_hs = df_hist_filter[df_hist_filter['hs'] == selected_hs]['port'].unique().tolist()
+            ports_list_filtered = ['Semua'] + sorted(ports_of_hs)
         selected_port = st.selectbox("Pilih Pelabuhan:", ports_list_filtered)
 
     if selected_hs == 'Semua' and selected_port == 'Semua':
